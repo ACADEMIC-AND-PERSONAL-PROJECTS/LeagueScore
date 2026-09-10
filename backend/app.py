@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api_football import ApiFootballClient, ApiFootballError
+from .database import SQLAlchemyStore
 from .models import (
     ApiError, EventType, League, LeagueInput, LoginRequest, Match, MatchEvent,
     MatchEventInput, MatchInput, MatchPatch, MatchStatus, Player, PlayerInput,
@@ -20,8 +21,8 @@ SECRET = "leaguescore-development-secret-key-2026"
 logger = logging.getLogger(__name__)
 
 
-def create_app(store: MockStore | None = None, api_football: ApiFootballClient | None = None) -> FastAPI:
-    store = store or MockStore.seeded()
+def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: ApiFootballClient | None = None) -> FastAPI:
+    store = store or SQLAlchemyStore()
     app = FastAPI(title="LeagueScore API", version="1.0.0")
     app.add_middleware(
         CORSMiddleware,
@@ -39,6 +40,13 @@ def create_app(store: MockStore | None = None, api_football: ApiFootballClient |
     app.state.api_football = api_football or ApiFootballClient()
     app.state.provider_sync = None
 
+    @app.middleware("http")
+    async def persist_store(request, call_next):
+        response = await call_next(request)
+        if hasattr(store, "flush"):
+            store.flush()
+        return response
+
     @app.on_event("startup")
     def sync_live_provider_data():
         provider = app.state.api_football
@@ -52,6 +60,8 @@ def create_app(store: MockStore | None = None, api_football: ApiFootballClient |
                 "importedMatches": count,
                 "requestedAt": datetime.now(UTC),
             }
+            if hasattr(store, "flush"):
+                store.flush()
         except ApiFootballError as exc:
             logger.warning("API-Football startup sync failed: %s", exc)
 
