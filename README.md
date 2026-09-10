@@ -304,17 +304,6 @@ API-Football free plans also impose request quotas. The application therefore:
 └── uv.lock
 ```
 
-## 🧭 Roadmap
-
-- [ ] Add Alembic migrations.
-- [ ] Move from generic JSON records to relational SQLAlchemy tables and foreign keys.
-- [ ] Add a PostgreSQL production profile.
-- [ ] Persist users and hashed passwords.
-- [ ] Replace startup synchronization with a scheduled worker.
-- [ ] Add provider freshness timestamps to the public response.
-- [ ] Add automated end-to-end browser tests.
-- [ ] Add observability for provider latency, quota, and synchronization failures.
-
 ## 🎓 Course
 
 This project was built as part of the **AI Dev Tools Zoomcamp 2026**.
@@ -322,19 +311,6 @@ This project was built as part of the **AI Dev Tools Zoomcamp 2026**.
 👉 **[Join the course](https://courses.datatalks.club/ai-dev-tools-2026/)**
 
 The course explores practical AI-assisted software development: understanding an existing codebase, writing specifications, building tested features, integrating external services, and validating the result end to end.
-
-## 🤝 Contributing
-
-1. Create a feature branch.
-2. Make a focused change.
-3. Add or update tests.
-4. Run `uv run pytest`.
-5. Run `npm run lint` and `npm run build` from `frontend/`.
-6. Open a pull request with a clear description.
-
-## 📄 License
-
-This is a learning and portfolio project created for the AI Dev Tools Zoomcamp. Check the repository settings for the applicable project license.
 
 ---
 
