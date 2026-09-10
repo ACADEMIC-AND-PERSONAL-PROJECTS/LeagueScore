@@ -1,0 +1,1288 @@
+openapi: 3.1.0
+info:
+  title: LeagueScore API
+  version: 1.0.0
+  description: |
+    Backend contract for the LeagueScore football live-score frontend.
+
+    The frontend currently calls an in-memory adapter from `frontend/src/api/api.ts`.
+    This specification replaces that adapter with an HTTP API and a WebSocket
+    channel while preserving the existing domain types and business rules.
+  contact:
+    name: LeagueScore backend team
+
+x-provider-integration:
+  selectedProvider: API-Football v3
+  providerBaseUrl: https://v3.football.api-sports.io
+  rationale: |
+    API-Football covers the read-side data required by the spectator UI:
+    competitions and seasons, fixtures, live fixtures, events, standings,
+    teams, players and lineups. It must be integrated behind LeagueScore's
+    backend; the browser must never receive or send the provider API key.
+  officialReferences:
+    documentation: https://www.api-football.com/documentation-v3
+    pricing: https://www.api-football.com/pricing/
+    rateLimits: https://www.api-football.com/news/post/how-ratelimit-works
+  verifiedOn: '2026-09-10'
+  verifiedClaims:
+    - The provider uses GET requests and authenticates with the x-apisports-key header.
+    - The free plan is advertised as 100 requests per day; exact minute limits and historical-season availability are plan-dependent and must be read from response headers and the provider dashboard.
+    - Fixture details expose match state, scores and events; live fixtures can be filtered with live=all.
+    - Standings require provider league and season identifiers.
+    - Lineups are fixture-scoped and are not required by the current spectator UI, but can be added later.
+  nonGoals:
+    - Do not make API-Football the public API contract.
+    - Do not depend on provider availability for admin CRUD operations.
+    - Do not poll every fixture independently; use bounded, cached synchronization jobs.
+  sourceOfTruth:
+    referenceData: LeagueScore database, with provider IDs stored as external references
+    liveReadModel: LeagueScore database/cache populated by provider sync
+    adminMutations: LeagueScore database and domain API
+  syncPolicy:
+    bootstrap:
+      - Resolve configured competitions and seasons through provider league/season endpoints.
+      - Import teams and fixtures for only the configured competitions.
+      - Persist the provider fixture ID and the raw provider status for reconciliation.
+    scheduled:
+      - Refresh upcoming and recent fixtures on a configurable schedule, default 15 minutes.
+      - Refresh live fixtures in one batched request no more often than the provider permits, default 30 seconds.
+      - Refresh standings after a match becomes finished, then periodically as a reconciliation job.
+    caching:
+      - Cache provider responses with an expiry and retain the last successful snapshot.
+      - Deduplicate concurrent requests by endpoint and normalized query.
+      - Track daily and minute quotas from response headers; stop non-critical jobs before exhaustion.
+    failure:
+      - On provider timeout or 5xx, keep serving the last valid LeagueScore snapshot and mark its freshness.
+      - On 429, honor Retry-After when present and apply exponential backoff with jitter.
+      - Never overwrite a newer local/admin correction with an older provider payload.
+  normalization:
+    - Map provider fixture IDs to internal match IDs; never expose provider IDs as internal IDs.
+    - Map provider status codes into SCHEDULED, LIVE, HALF_TIME, FINISHED, POSTPONED or CANCELLED.
+    - Normalize provider event type/detail into GOAL, YELLOW_CARD, RED_CARD or SUBSTITUTION.
+    - Preserve unmapped provider statuses/events in rawProviderPayload for audit and future mapping.
+    - Resolve provider team/player names to internal IDs where possible; retain provider names when no match exists.
+  dataQuality:
+    - Store providerUpdatedAt and lastSyncedAt on provider-backed records.
+    - Expose data freshness in internal observability, not as a breaking change to the current Match response.
+    - Treat provider data as eventually consistent; final scores and standings require reconciliation after FINISHED.
+servers:
+  - url: http://localhost:4000/api/v1
+    description: Local development
+  - url: https://api.example.com/api/v1
+    description: Production placeholder
+
+x-backend-requirements:
+  persistence:
+    - Use foreign keys for league -> season, season -> match, match -> teams, team -> players, and match -> events.
+    - Use UTC for storage and transport. The browser formats ISO-8601 timestamps in the user's locale.
+    - Use transactions for event creation/deletion because score changes and event writes must be atomic.
+    - Enforce unique, case-insensitive league names and team names.
+  authorization:
+    - All POST, PATCH and DELETE operations outside authentication require an ADMIN role.
+    - Never expose password hashes or credentials in API responses.
+    - Store sessions server-side or use short-lived signed access tokens with revocation/rotation.
+  matchRules:
+    - A scheduled match must reference an existing season and two different teams.
+    - Both teams must participate in the selected season and belong to its league.
+    - A finished match is immutable through live-control endpoints; corrections use an audited admin correction path.
+    - Only finished matches contribute to standings.
+    - A goal increments the score for its side; deleting a goal decrements it without allowing negative scores.
+    - A substitution requires playerOutName. Event minutes must be positive and within the configured match limit.
+    - A season may have at most one current season per league. Setting one season current clears the previous value atomically.
+  standings:
+    - Compute played, won, drawn, lost, goalsFor, goalsAgainst, goalDifference and points from finished matches.
+    - Sort by points DESC, goalDifference DESC, goalsFor DESC, then team name ASC.
+    - Recompute or invalidate standings whenever a match becomes finished or a finished-match correction is applied.
+  realtime:
+    - Publish after the database transaction commits, never before.
+    - Deliver MATCH_UPDATED for score, minute, status or metadata changes.
+    - Deliver EVENT_ADDED and EVENT_DELETED for timeline changes.
+    - Include the authoritative match snapshot in every message so clients do not need a follow-up read.
+  implementationGapsFoundInFrontend:
+    - The current UI enables the event form at HALF_TIME while the mock adapter accepts events only for LIVE matches; choose one policy and keep UI and API consistent.
+    - The current schedule button is a placeholder; the POST /matches contract is ready for its implementation.
+    - The current team manager hardcodes country to England and only collects a team name; production UI must expose the complete TeamInput.
+    - The current mock session is process-local; production authentication must persist across browser reloads and server instances.
+
+tags:
+  - name: Authentication
+  - name: Public competitions
+  - name: Public matches
+  - name: Public teams
+  - name: Administration
+  - name: Live operations
+
+security:
+  - bearerAuth: []
+
+paths:
+  /auth/login:
+    post:
+      tags: [Authentication]
+      security: []
+      summary: Sign in an administrator
+      operationId: login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated administrator session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Session'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /auth/logout:
+    post:
+      tags: [Authentication]
+      summary: Revoke the current administrator session
+      operationId: logout
+      responses:
+        '204':
+          description: Session revoked
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /leagues:
+    get:
+      tags: [Public competitions]
+      security: []
+      summary: List leagues
+      operationId: getLeagues
+      responses:
+        '200':
+          description: Available leagues
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/League'
+    post:
+      tags: [Administration]
+      summary: Create a league
+      operationId: createLeague
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeagueInput'
+      responses:
+        '201':
+          description: League created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/League'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: League name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /leagues/{leagueId}:
+    parameters:
+      - $ref: '#/components/parameters/LeagueId'
+    patch:
+      tags: [Administration]
+      summary: Update a league
+      operationId: updateLeague
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LeaguePatch'
+      responses:
+        '200':
+          description: Updated league
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/League'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Administration]
+      summary: Delete a league without matches
+      operationId: deleteLeague
+      responses:
+        '204':
+          description: League deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: League still owns one or more matches
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /leagues/{leagueId}/seasons:
+    parameters:
+      - $ref: '#/components/parameters/LeagueId'
+    get:
+      tags: [Public competitions]
+      security: []
+      summary: List seasons for a league
+      operationId: getSeasons
+      responses:
+        '200':
+          description: Seasons ordered from current to oldest
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Season'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Administration]
+      summary: Create a season
+      operationId: createSeason
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeasonInput'
+      responses:
+        '201':
+          description: Season created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Season'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: A season with the same label already exists for the league
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /seasons/{seasonId}/teams:
+    parameters:
+      - $ref: '#/components/parameters/SeasonId'
+    get:
+      tags: [Public competitions]
+      security: []
+      summary: List teams participating in a season
+      operationId: getSeasonTeams
+      responses:
+        '200':
+          description: Participating teams
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Team'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /seasons/{seasonId}/matches:
+    parameters:
+      - $ref: '#/components/parameters/SeasonId'
+      - $ref: '#/components/parameters/StatusQuery'
+    get:
+      tags: [Public matches]
+      security: []
+      summary: List matches for a season
+      operationId: getSeasonMatches
+      responses:
+        '200':
+          description: Season matches sorted by kickoff ascending
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Match'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /teams:
+    post:
+      tags: [Administration]
+      summary: Create a team
+      operationId: createTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamInput'
+      responses:
+        '201':
+          description: Team created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: Team name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /teams/{teamId}:
+    parameters:
+      - $ref: '#/components/parameters/TeamId'
+    get:
+      tags: [Public teams]
+      security: []
+      summary: Get a team
+      operationId: getTeam
+      responses:
+        '200':
+          description: Team
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Administration]
+      summary: Update a team
+      operationId: updateTeam
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TeamPatch'
+      responses:
+        '200':
+          description: Updated team
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Team'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Administration]
+      summary: Delete a team without match history
+      operationId: deleteTeam
+      responses:
+        '204':
+          description: Team deleted
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Team is referenced by a match
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /teams/{teamId}/players:
+    parameters:
+      - $ref: '#/components/parameters/TeamId'
+    get:
+      tags: [Public teams]
+      security: []
+      summary: List a team's players
+      operationId: getPlayers
+      responses:
+        '200':
+          description: Players sorted by shirt number
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Player'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Administration]
+      summary: Register a player
+      operationId: createPlayer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlayerInput'
+      responses:
+        '201':
+          description: Player registered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Player'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /players/{playerId}:
+    parameters:
+      - $ref: '#/components/parameters/PlayerId'
+    patch:
+      tags: [Administration]
+      summary: Update a player
+      operationId: updatePlayer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PlayerPatch'
+      responses:
+        '200':
+          description: Updated player
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Player'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Administration]
+      summary: Remove a player
+      operationId: deletePlayer
+      responses:
+        '204':
+          description: Player removed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /matches/live:
+    get:
+      tags: [Public matches]
+      security: []
+      summary: List live and half-time matches
+      operationId: getLiveMatches
+      responses:
+        '200':
+          description: Matches currently in play or at half-time
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Match'
+
+  /matches/upcoming:
+    get:
+      tags: [Public matches]
+      security: []
+      summary: List scheduled and postponed matches
+      operationId: getUpcomingMatches
+      responses:
+        '200':
+          description: Upcoming matches sorted by kickoff ascending
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Match'
+
+  /matches/recent:
+    get:
+      tags: [Public matches]
+      security: []
+      summary: List finished matches
+      operationId: getRecentMatches
+      responses:
+        '200':
+          description: Finished matches sorted by kickoff descending
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Match'
+
+  /matches:
+    post:
+      tags: [Administration]
+      summary: Schedule a match
+      operationId: createMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MatchInput'
+      responses:
+        '201':
+          description: Scheduled match
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '400':
+          description: Invalid team pairing or kickoff
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Duplicate or conflicting fixture
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /matches/{matchId}:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    get:
+      tags: [Public matches]
+      security: []
+      summary: Get a match with embedded teams and timeline
+      operationId: getMatch
+      responses:
+        '200':
+          description: Match details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    patch:
+      tags: [Administration]
+      summary: Correct match metadata, status or score
+      operationId: updateMatch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MatchPatch'
+      responses:
+        '200':
+          description: Updated match
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Invalid state transition
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /matches/{matchId}/events:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+    post:
+      tags: [Live operations]
+      summary: Add a live match event
+      operationId: addMatchEvent
+      description: |
+        Only LIVE or HALF_TIME matches accept events. GOAL atomically updates
+        the corresponding score before the event is published.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MatchEventInput'
+      responses:
+        '201':
+          description: Event created and broadcast
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MatchEvent'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Match is not live
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /matches/{matchId}/events/{eventId}:
+    parameters:
+      - $ref: '#/components/parameters/MatchId'
+      - $ref: '#/components/parameters/EventId'
+    delete:
+      tags: [Live operations]
+      summary: Delete or correct a match event
+      operationId: deleteMatchEvent
+      description: Removing a GOAL atomically rolls back the matching score.
+      responses:
+        '200':
+          description: Updated match after event deletion
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /matches/{matchId}/start:
+    post:
+      tags: [Live operations]
+      summary: Start a scheduled match
+      operationId: startMatch
+      responses:
+        '200':
+          description: Match started at minute 1
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /matches/{matchId}/half-time:
+    post:
+      tags: [Live operations]
+      summary: Mark a live match as half-time
+      operationId: halfTimeMatch
+      responses:
+        '200':
+          description: Match paused at minute 45
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /matches/{matchId}/resume:
+    post:
+      tags: [Live operations]
+      summary: Resume a half-time match
+      operationId: resumeMatch
+      responses:
+        '200':
+          description: Match resumed at minute 46
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /matches/{matchId}/finish:
+    post:
+      tags: [Live operations]
+      summary: Finish a live or half-time match
+      operationId: finishMatch
+      responses:
+        '200':
+          description: Match officially finished and standings eligible
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /matches/{matchId}/postpone:
+    post:
+      tags: [Live operations]
+      summary: Postpone a match
+      operationId: postponeMatch
+      responses:
+        '200':
+          description: Match postponed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /matches/{matchId}/cancel:
+    post:
+      tags: [Live operations]
+      summary: Cancel a match
+      operationId: cancelMatch
+      responses:
+        '200':
+          description: Match cancelled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Match'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /seasons/{seasonId}/standings:
+    parameters:
+      - $ref: '#/components/parameters/SeasonId'
+    get:
+      tags: [Public competitions]
+      security: []
+      summary: Get computed league standings
+      operationId: getStandings
+      description: |
+        Compute rows from FINISHED matches only. Sort by points descending,
+        goal difference descending, goals for descending, then team name
+        ascending. Assign positions after sorting.
+      responses:
+        '200':
+          description: Standings ordered by rank
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/StandingRow'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /integrations/api-football/sync:
+    post:
+      tags: [Administration]
+      summary: Run a bounded API-Football synchronization
+      operationId: syncApiFootball
+      description: |
+        Queues an idempotent synchronization for configured competitions.
+        The server owns provider credentials, quota handling, normalization,
+        retries and persistence. This endpoint must not proxy arbitrary URLs
+        or expose the provider API key.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProviderSyncRequest'
+      responses:
+        '202':
+          description: Synchronization accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderSyncJob'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          description: A synchronization with the same scope is already running
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+
+  /integrations/api-football/status:
+    get:
+      tags: [Administration]
+      summary: Inspect API-Football integration health and quota
+      operationId: getApiFootballStatus
+      responses:
+        '200':
+          description: Provider integration status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProviderStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    LeagueId:
+      name: leagueId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    SeasonId:
+      name: seasonId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    TeamId:
+      name: teamId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    PlayerId:
+      name: playerId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    MatchId:
+      name: matchId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    EventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    StatusQuery:
+      name: status
+      in: query
+      required: false
+      schema:
+        type: array
+        items:
+          $ref: '#/components/schemas/MatchStatus'
+      style: form
+      explode: false
+
+  responses:
+    BadRequest:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unauthorized:
+      description: Authentication required or credentials invalid
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Operation conflicts with the current resource state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    RateLimited:
+      description: Too many requests
+      headers:
+        Retry-After:
+          schema: { type: integer }
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+
+  schemas:
+    Error:
+      type: object
+      required: [error, message, status]
+      properties:
+        error:
+          type: string
+          examples: [VALIDATION_ERROR]
+        message:
+          type: string
+        status:
+          type: integer
+        details:
+          type: object
+          additionalProperties: true
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: { type: string, minLength: 1, maxLength: 100 }
+        password: { type: string, minLength: 1, maxLength: 200, format: password }
+
+    Session:
+      type: object
+      required: [token, username, expiresAt]
+      properties:
+        token: { type: string }
+        username: { type: string }
+        expiresAt: { type: string, format: date-time }
+
+    League:
+      type: object
+      required: [id, name, country, logo]
+      properties:
+        id: { type: string }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        country: { type: string, minLength: 1, maxLength: 80 }
+        logo: { type: string, description: Emoji or image URL used by the current UI }
+
+    LeagueInput:
+      type: object
+      required: [name, country, logo]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        country: { type: string, minLength: 1, maxLength: 80 }
+        logo: { type: string, minLength: 1, maxLength: 500 }
+
+    LeaguePatch:
+      allOf:
+        - $ref: '#/components/schemas/LeagueInput'
+      required: []
+
+    Season:
+      type: object
+      required: [id, leagueId, label, isCurrent]
+      properties:
+        id: { type: string }
+        leagueId: { type: string }
+        label:
+          type: string
+          pattern: '^[0-9]{4}/[0-9]{4}$'
+          examples: ['2025/2026']
+        isCurrent: { type: boolean }
+
+    SeasonInput:
+      type: object
+      required: [leagueId, label, isCurrent]
+      properties:
+        leagueId: { type: string }
+        label: { type: string, pattern: '^[0-9]{4}/[0-9]{4}$' }
+        isCurrent: { type: boolean }
+
+    Team:
+      type: object
+      required: [id, name, shortName, crestUrl, country]
+      properties:
+        id: { type: string }
+        name: { type: string, minLength: 1, maxLength: 120 }
+        shortName: { type: string, minLength: 1, maxLength: 10 }
+        crestUrl: { type: string, format: uri-reference }
+        country: { type: string, minLength: 1, maxLength: 80 }
+
+    TeamInput:
+      type: object
+      required: [name, shortName, crestUrl, country]
+      properties:
+        name: { type: string, minLength: 1, maxLength: 120 }
+        shortName: { type: string, minLength: 1, maxLength: 10 }
+        crestUrl: { type: string, format: uri-reference }
+        country: { type: string, minLength: 1, maxLength: 80 }
+
+    TeamPatch:
+      $ref: '#/components/schemas/TeamInput'
+
+    PlayerPosition:
+      type: string
+      enum: [GOALKEEPER, DEFENDER, MIDFIELDER, FORWARD]
+
+    Player:
+      type: object
+      required: [id, teamId, firstName, lastName, shirtNumber, position]
+      properties:
+        id: { type: string }
+        teamId: { type: string }
+        firstName: { type: string, minLength: 1, maxLength: 80 }
+        lastName: { type: string, minLength: 1, maxLength: 80 }
+        shirtNumber: { type: integer, minimum: 1, maximum: 99 }
+        position:
+          $ref: '#/components/schemas/PlayerPosition'
+
+    PlayerInput:
+      type: object
+      required: [teamId, firstName, lastName, shirtNumber, position]
+      properties:
+        teamId: { type: string }
+        firstName: { type: string, minLength: 1, maxLength: 80 }
+        lastName: { type: string, minLength: 1, maxLength: 80 }
+        shirtNumber: { type: integer, minimum: 1, maximum: 99 }
+        position:
+          $ref: '#/components/schemas/PlayerPosition'
+
+    PlayerPatch:
+      $ref: '#/components/schemas/PlayerInput'
+
+    MatchStatus:
+      type: string
+      enum: [SCHEDULED, LIVE, HALF_TIME, FINISHED, POSTPONED, CANCELLED]
+
+    Match:
+      type: object
+      required:
+        [id, leagueId, seasonId, homeTeam, awayTeam, kickoff, status,
+         minute, homeScore, awayScore, events]
+      properties:
+        id: { type: string }
+        leagueId: { type: string }
+        seasonId: { type: string }
+        homeTeam:
+          $ref: '#/components/schemas/Team'
+        awayTeam:
+          $ref: '#/components/schemas/Team'
+        kickoff: { type: string, format: date-time }
+        status:
+          $ref: '#/components/schemas/MatchStatus'
+        minute:
+          type: [integer, 'null']
+          minimum: 0
+          maximum: 130
+        homeScore: { type: integer, minimum: 0 }
+        awayScore: { type: integer, minimum: 0 }
+        events:
+          type: array
+          items:
+            $ref: '#/components/schemas/MatchEvent'
+
+    MatchInput:
+      type: object
+      required: [leagueId, seasonId, homeTeamId, awayTeamId, kickoff]
+      properties:
+        leagueId: { type: string }
+        seasonId: { type: string }
+        homeTeamId: { type: string }
+        awayTeamId: { type: string }
+        kickoff: { type: string, format: date-time }
+
+    MatchPatch:
+      type: object
+      minProperties: 1
+      properties:
+        kickoff: { type: string, format: date-time }
+        status:
+          $ref: '#/components/schemas/MatchStatus'
+        homeScore: { type: integer, minimum: 0 }
+        awayScore: { type: integer, minimum: 0 }
+
+    EventType:
+      type: string
+      enum: [GOAL, YELLOW_CARD, RED_CARD, SUBSTITUTION]
+
+    MatchEvent:
+      type: object
+      required: [id, matchId, type, minute, side, playerName, createdAt]
+      properties:
+        id: { type: string }
+        matchId: { type: string }
+        type:
+          $ref: '#/components/schemas/EventType'
+        minute: { type: integer, minimum: 1, maximum: 130 }
+        side:
+          type: string
+          enum: [home, away]
+        playerName: { type: string, minLength: 1, maxLength: 160 }
+        playerOutName:
+          type: [string, 'null']
+          maxLength: 160
+        note:
+          type: [string, 'null']
+          maxLength: 500
+        createdAt: { type: string, format: date-time }
+
+    MatchEventInput:
+      type: object
+      required: [type, minute, side, playerName]
+      properties:
+        type:
+          $ref: '#/components/schemas/EventType'
+        minute: { type: integer, minimum: 1, maximum: 130 }
+        side:
+          type: string
+          enum: [home, away]
+        playerName: { type: string, minLength: 1, maxLength: 160 }
+        playerOutName:
+          type: string
+          minLength: 1
+          maxLength: 160
+          description: Required when type is SUBSTITUTION.
+        note: { type: string, maxLength: 500 }
+
+    StandingRow:
+      type: object
+      required:
+        [team, position, played, won, drawn, lost, goalsFor,
+         goalsAgainst, goalDifference, points]
+      properties:
+        team:
+          $ref: '#/components/schemas/Team'
+        position: { type: integer, minimum: 1 }
+        played: { type: integer, minimum: 0 }
+        won: { type: integer, minimum: 0 }
+        drawn: { type: integer, minimum: 0 }
+        lost: { type: integer, minimum: 0 }
+        goalsFor: { type: integer, minimum: 0 }
+        goalsAgainst: { type: integer, minimum: 0 }
+        goalDifference: { type: integer }
+        points: { type: integer, minimum: 0 }
+
+    ProviderSyncRequest:
+      type: object
+      properties:
+        leagueIds:
+          type: array
+          maxItems: 20
+          items: { type: string }
+        seasonIds:
+          type: array
+          maxItems: 20
+          items: { type: string }
+        scope:
+          type: string
+          enum: [reference_data, fixtures, live, standings, all]
+          default: all
+        force:
+          type: boolean
+          default: false
+          description: Force a refresh only when quota policy allows it.
+
+    ProviderSyncJob:
+      type: object
+      required: [id, provider, status, requestedAt]
+      properties:
+        id: { type: string }
+        provider: { type: string, const: API_FOOTBALL }
+        status:
+          type: string
+          enum: [QUEUED, RUNNING, SUCCEEDED, PARTIAL, FAILED]
+        requestedAt: { type: string, format: date-time }
+        startedAt: { type: [string, 'null'], format: date-time }
+        finishedAt: { type: [string, 'null'], format: date-time }
+        summary:
+          type: object
+          additionalProperties: true
+
+    ProviderStatus:
+      type: object
+      required: [provider, configured, healthy, lastSuccessfulSync]
+      properties:
+        provider: { type: string, const: API_FOOTBALL }
+        configured: { type: boolean }
+        healthy: { type: boolean }
+        lastSuccessfulSync:
+          type: [string, 'null']
+          format: date-time
+        quota:
+          type: object
+          properties:
+            dailyLimit: { type: [integer, 'null'] }
+            dailyRemaining: { type: [integer, 'null'] }
+            minuteLimit: { type: [integer, 'null'] }
+            minuteRemaining: { type: [integer, 'null'] }
+            resetAt:
+              type: [string, 'null']
+              format: date-time
+        lastError:
+          type: [string, 'null']
+
+  x-websocket:
+    url: wss://api.example.com/ws
+    path: /ws
+    description: |
+      Public spectators connect with `?matchId=<id>` to receive updates for
+      one match, or without a matchId for all match updates. Authentication is
+      not required for spectators. Administrators use the same channel with a
+      valid bearer token when operational acknowledgements are needed.
+    messages:
+      matchUpdated:
+        payload:
+          $ref: '#/components/schemas/RealtimeMatchUpdated'
+      eventAdded:
+        payload:
+          $ref: '#/components/schemas/RealtimeEventAdded'
+      eventDeleted:
+        payload:
+          $ref: '#/components/schemas/RealtimeEventDeleted'
+
+    RealtimeMatchUpdated:
+      type: object
+      required: [type, matchId, match]
+      properties:
+        type: { const: MATCH_UPDATED }
+        matchId: { type: string }
+        match:
+          $ref: '#/components/schemas/Match'
+
+    RealtimeEventAdded:
+      type: object
+      required: [type, matchId, event, match]
+      properties:
+        type: { const: EVENT_ADDED }
+        matchId: { type: string }
+        event:
+          $ref: '#/components/schemas/MatchEvent'
+        match:
+          $ref: '#/components/schemas/Match'
+
+    RealtimeEventDeleted:
+      type: object
+      required: [type, matchId, eventId, match]
+      properties:
+        type: { const: EVENT_DELETED }
+        matchId: { type: string }
+        eventId: { type: string }
+        match:
+          $ref: '#/components/schemas/Match'
