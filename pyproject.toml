@@ -10,6 +10,7 @@ dependencies = [
   "PyJWT>=2.10,<3",
   "httpx>=0.28.1",
   "python-dotenv>=1.2.3",
+  "SQLAlchemy>=2.0,<3",
 ]
 
 [dependency-groups]

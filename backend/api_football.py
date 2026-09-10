@@ -92,3 +92,6 @@ class ApiFootballClient:
             "fixtures/events",
             params={"fixture": fixture_id},
         ).get("response", [])
+
+    def fixtures_on_date(self, date: str) -> list[dict[str, Any]]:
+        return self.get("fixtures", params={"date": date}).get("response", [])

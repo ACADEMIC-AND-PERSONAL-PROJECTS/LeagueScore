@@ -30,7 +30,7 @@ export const MatchesView: React.FC<MatchesViewProps> = ({
   const recent = filter(recentMatches);
   const label = (match: Match) => {
     const league = leagues.find((item) => item.id === match.leagueId);
-    return league ? `${league.logo} ${league.name}` : 'League';
+    return league ? league.name : 'League';
   };
   const matches = useMemo(() => (mode === 'live' ? live : [...upcoming, ...recent]), [mode, live, upcoming, recent]);
 

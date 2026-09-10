@@ -36,7 +36,7 @@ export const HomeView: React.FC<HomeViewProps> = ({
 
   const label = (m: Match) => {
     const l = leagues.find((x) => x.id === m.leagueId);
-    return l ? `${l.logo} ${l.name}` : '';
+    return l ? l.name : '';
   };
 
   const renderList = (list: Match[]) =>
@@ -79,17 +79,20 @@ export const HomeView: React.FC<HomeViewProps> = ({
         </div>
       </section>
 
-      {/* League filter chips (spec §14) */}
-      <div className="flex flex-wrap items-center gap-2">
-        <FilterChip active={filter === 'ALL'} onClick={() => setFilter('ALL')}>
-          All
-        </FilterChip>
-        {leagues.map((l) => (
-          <FilterChip key={l.id} active={filter === l.id} onClick={() => setFilter(l.id)}>
-            {l.logo} {l.name}
-          </FilterChip>
-        ))}
-      </div>
+      {/* Compact league source selector (spec §14). */}
+      <label className="flex w-fit items-center gap-3 rounded-lg border border-[#3b4b3d]/40 bg-[#181c24] px-3 py-2 text-xs font-mono-tabular uppercase text-[#b9cbb9]">
+        Source
+        <select
+          value={filter}
+          onChange={(event) => setFilter(event.target.value)}
+          className="max-w-[16rem] bg-transparent text-sm normal-case text-white focus:outline-none"
+        >
+          <option value="ALL">All leagues</option>
+          {leagues.map((league) => (
+            <option key={league.id} value={league.id}>{league.name}</option>
+          ))}
+        </select>
+      </label>
 
       {/* Live matches with distinct indicator (spec §15/§28) */}
       <Section icon={<LiveDot />} title="LIVE & HALF-TIME" accent="text-[#00ff87]">
@@ -116,7 +119,11 @@ export const HomeView: React.FC<HomeViewProps> = ({
               onClick={() => onOpenLeague(l.id)}
               className="cursor-pointer group p-4 rounded-xl bg-[#181c24] border border-[#3b4b3d]/30 hover:border-[#00ff87]/60 transition-all text-left flex items-center gap-3 active:scale-95"
             >
-              <span className="text-2xl">{l.logo}</span>
+              {l.logo.startsWith('http') ? (
+                <img src={l.logo} alt="" className="h-8 w-8 object-contain" />
+              ) : (
+                <span className="text-2xl">{l.logo}</span>
+              )}
               <span className="min-w-0">
                 <span className="block font-heading font-bold text-white text-sm truncate">{l.name}</span>
                 <span className="block font-mono-tabular text-[10px] text-[#b9cbb9] uppercase tracking-wider">

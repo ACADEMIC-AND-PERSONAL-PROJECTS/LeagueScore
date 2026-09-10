@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 import logging
+from threading import Lock
+from time import monotonic
 from typing import Annotated
 
 import jwt
@@ -8,6 +10,7 @@ from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 from .api_football import ApiFootballClient, ApiFootballError
+from .database import SQLAlchemyStore
 from .models import (
     ApiError, EventType, League, LeagueInput, LoginRequest, Match, MatchEvent,
     MatchEventInput, MatchInput, MatchPatch, MatchStatus, Player, PlayerInput,
@@ -20,8 +23,8 @@ SECRET = "leaguescore-development-secret-key-2026"
 logger = logging.getLogger(__name__)
 
 
-def create_app(store: MockStore | None = None, api_football: ApiFootballClient | None = None) -> FastAPI:
-    store = store or MockStore.seeded()
+def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: ApiFootballClient | None = None) -> FastAPI:
+    store = store or SQLAlchemyStore()
     app = FastAPI(title="LeagueScore API", version="1.0.0")
     app.add_middleware(
         CORSMiddleware,
@@ -38,6 +41,43 @@ def create_app(store: MockStore | None = None, api_football: ApiFootballClient |
     app.state.store = store
     app.state.api_football = api_football or ApiFootballClient()
     app.state.provider_sync = None
+    app.state.provider_refresh_at = {"live": 0.0, "recent": 0.0}
+    app.state.provider_refresh_errors: dict[str, str] = {}
+    app.state.provider_refresh_lock = Lock()
+
+    def refresh_provider_if_stale(scope: str) -> None:
+        provider = app.state.api_football
+        if not provider.configured:
+            return
+        now = monotonic()
+        if now - app.state.provider_refresh_at[scope] < 30:
+            return
+        with app.state.provider_refresh_lock:
+            now = monotonic()
+            if now - app.state.provider_refresh_at[scope] < 30:
+                return
+            try:
+                count = SyncService(store, provider).sync(scope=scope)
+                app.state.provider_sync = {
+                    "provider": "API_FOOTBALL",
+                    "status": "COMPLETED",
+                    "importedMatches": count,
+                    "requestedAt": datetime.now(UTC),
+                }
+                app.state.provider_refresh_at[scope] = now
+                if hasattr(store, "flush"):
+                    store.flush()
+            except ApiFootballError as exc:
+                logger.warning("API-Football %s sync failed: %s", scope, exc)
+                app.state.provider_refresh_at[scope] = now
+                app.state.provider_refresh_errors[scope] = str(exc)
+
+    @app.middleware("http")
+    async def persist_store(request, call_next):
+        response = await call_next(request)
+        if hasattr(store, "flush"):
+            store.flush()
+        return response
 
     @app.on_event("startup")
     def sync_live_provider_data():
@@ -45,13 +85,15 @@ def create_app(store: MockStore | None = None, api_football: ApiFootballClient |
         if not provider.configured:
             return
         try:
-            count = SyncService(store, provider).sync(scope="live")
+            count = SyncService(store, provider).sync(scope="all")
             app.state.provider_sync = {
                 "provider": "API_FOOTBALL",
                 "status": "COMPLETED",
                 "importedMatches": count,
                 "requestedAt": datetime.now(UTC),
             }
+            if hasattr(store, "flush"):
+                store.flush()
         except ApiFootballError as exc:
             logger.warning("API-Football startup sync failed: %s", exc)
 
@@ -228,6 +270,7 @@ def create_app(store: MockStore | None = None, api_football: ApiFootballClient |
 
     @app.get("/api/v1/matches/live", response_model=list[Match])
     def get_live_matches():
+        refresh_provider_if_stale("live")
         return [match for match in store.matches.values() if match.status in (MatchStatus.LIVE, MatchStatus.HALF_TIME)]
 
     @app.get("/api/v1/matches/upcoming", response_model=list[Match])
@@ -236,6 +279,7 @@ def create_app(store: MockStore | None = None, api_football: ApiFootballClient |
 
     @app.get("/api/v1/matches/recent", response_model=list[Match])
     def get_recent_matches():
+        refresh_provider_if_stale("recent")
         return sorted((match for match in store.matches.values() if match.status == MatchStatus.FINISHED), key=lambda match: match.kickoff, reverse=True)
 
     @app.get("/api/v1/matches/{match_id}", response_model=Match)

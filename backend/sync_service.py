@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from .api_football import ApiFootballClient
@@ -58,6 +58,15 @@ class SyncService:
         fixtures: list[dict[str, Any]] = []
         if scope == "live":
             fixtures = self.provider.fixtures(live=True)
+        elif scope == "recent":
+            today = datetime.now(UTC).date()
+            fixtures = self.provider.fixtures_on_date(str(today))
+            fixtures.extend(self.provider.fixtures_on_date(str(today - timedelta(days=1))))
+        elif scope == "all":
+            today = datetime.now(UTC).date()
+            fixtures = self.provider.fixtures(live=True)
+            fixtures.extend(self.provider.fixtures_on_date(str(today)))
+            fixtures.extend(self.provider.fixtures_on_date(str(today - timedelta(days=1))))
         else:
             season = datetime.now(UTC).year
             for internal_id in selected:
@@ -65,8 +74,9 @@ class SyncService:
                 if provider_id:
                     fixtures.extend(self.provider.league_fixtures(provider_id, season))
 
-        if fixtures:
-            self._clear_provider_read_model()
+        # The free provider plan returns hundreds of fixtures for a date.
+        # Keep the read model bounded and avoid exhausting the daily quota.
+        fixtures = fixtures[:100]
         for fixture in fixtures:
             self._upsert_fixture(fixture)
         return len(fixtures)
@@ -108,7 +118,7 @@ class SyncService:
             awayScore=score.get("away") or 0,
             events=existing.events if existing else [],
         )
-        if status in (MatchStatus.LIVE, MatchStatus.HALF_TIME, MatchStatus.FINISHED):
+        if status in (MatchStatus.LIVE, MatchStatus.HALF_TIME):
             self._sync_events(match, fixture_data["id"])
         self.store.matches[match.id] = match
 
