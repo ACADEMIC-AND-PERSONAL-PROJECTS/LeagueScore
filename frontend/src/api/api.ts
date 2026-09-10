@@ -37,7 +37,7 @@ export const getSession = () => session;
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  headers.set('Content-Type', 'application/json');
+  if (init.body) headers.set('Content-Type', 'application/json');
   if (session) headers.set('Authorization', `Bearer ${session.token}`);
   const response = await fetch(`${API_BASE_URL}${path}`, { ...init, headers });
   if (!response.ok) {
