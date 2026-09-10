@@ -54,8 +54,11 @@ def test_sync_replaces_seeded_read_model_with_provider_fixture():
         def fixture_events(self, fixture_id):
             return []
 
+        def fixtures_on_date(self, date):
+            return []
+
     store = MockStore.seeded()
-    imported = SyncService(store, Provider()).sync()
+    imported = SyncService(store, Provider()).sync(scope="all")
 
     assert imported == 1
     assert list(store.matches) == ["af-987"]

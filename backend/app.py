@@ -53,7 +53,7 @@ def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: A
         if not provider.configured:
             return
         try:
-            count = SyncService(store, provider).sync(scope="live")
+            count = SyncService(store, provider).sync(scope="all")
             app.state.provider_sync = {
                 "provider": "API_FOOTBALL",
                 "status": "COMPLETED",
