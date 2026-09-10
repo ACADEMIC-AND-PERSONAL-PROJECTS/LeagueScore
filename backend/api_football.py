@@ -80,3 +80,15 @@ class ApiFootballClient:
     def fixtures(self, *, live: bool = False) -> list[dict[str, Any]]:
         params: dict[str, Any] = {"live": "all"} if live else {}
         return self.get("fixtures", params=params).get("response", [])
+
+    def league_fixtures(self, league_id: int, season: int) -> list[dict[str, Any]]:
+        return self.get(
+            "fixtures",
+            params={"league": league_id, "season": season},
+        ).get("response", [])
+
+    def fixture_events(self, fixture_id: int) -> list[dict[str, Any]]:
+        return self.get(
+            "fixtures/events",
+            params={"fixture": fixture_id},
+        ).get("response", [])

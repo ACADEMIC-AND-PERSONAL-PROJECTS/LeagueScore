@@ -2,12 +2,16 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.app import create_app
+from backend.api_football import ApiFootballClient, ApiFootballConfig
 from backend.store import MockStore
 
 
 @pytest.fixture
 def client():
-    app = create_app(store=MockStore.seeded())
+    app = create_app(
+        store=MockStore.seeded(),
+        api_football=ApiFootballClient(ApiFootballConfig(api_key=None)),
+    )
     with TestClient(app) as test_client:
         yield test_client
 
