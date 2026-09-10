@@ -31,7 +31,7 @@ def test_client_rejects_missing_key():
         raise AssertionError("Expected missing-key error")
 
 
-def test_sync_replaces_seeded_read_model_with_provider_fixture():
+def test_sync_upserts_provider_fixture_without_removing_existing_records():
     fixture = {
         "fixture": {
             "id": 987,
@@ -61,5 +61,23 @@ def test_sync_replaces_seeded_read_model_with_provider_fixture():
     imported = SyncService(store, Provider()).sync(scope="all")
 
     assert imported == 1
-    assert list(store.matches) == ["af-987"]
+    assert "af-987" in store.matches
     assert store.matches["af-987"].status.value == "LIVE"
+
+
+def test_sync_does_not_delete_existing_records_when_provider_returns_no_fixtures():
+    class Provider:
+        def fixtures(self, *, live=False):
+            return []
+
+        def fixture_events(self, fixture_id):
+            return []
+
+        def fixtures_on_date(self, date):
+            return []
+
+    store = MockStore.seeded()
+    before = set(store.matches)
+    SyncService(store, Provider()).sync(scope="all")
+
+    assert set(store.matches) == before

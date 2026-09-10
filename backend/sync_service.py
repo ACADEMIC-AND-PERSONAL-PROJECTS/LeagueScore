@@ -77,8 +77,6 @@ class SyncService:
         # The free provider plan returns hundreds of fixtures for a date.
         # Keep the read model bounded and avoid exhausting the daily quota.
         fixtures = fixtures[:100]
-        if fixtures and scope in ("all", "recent"):
-            self._clear_provider_read_model()
         for fixture in fixtures:
             self._upsert_fixture(fixture)
         return len(fixtures)

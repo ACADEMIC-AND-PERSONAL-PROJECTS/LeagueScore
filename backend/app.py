@@ -42,6 +42,7 @@ def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: A
     app.state.api_football = api_football or ApiFootballClient()
     app.state.provider_sync = None
     app.state.provider_refresh_at = {"live": 0.0, "recent": 0.0}
+    app.state.provider_refresh_errors: dict[str, str] = {}
     app.state.provider_refresh_lock = Lock()
 
     def refresh_provider_if_stale(scope: str) -> None:
@@ -68,6 +69,8 @@ def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: A
                     store.flush()
             except ApiFootballError as exc:
                 logger.warning("API-Football %s sync failed: %s", scope, exc)
+                app.state.provider_refresh_at[scope] = now
+                app.state.provider_refresh_errors[scope] = str(exc)
 
     @app.middleware("http")
     async def persist_store(request, call_next):
