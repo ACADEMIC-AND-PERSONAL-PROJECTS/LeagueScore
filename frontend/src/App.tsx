@@ -54,7 +54,7 @@ export default function App() {
   // Initial load + real-time subscription (spec §13: updates without refresh)
   useEffect(() => {
     refreshAll();
-    const refreshTimer = window.setInterval(refreshAll, 60_000);
+    const refreshTimer = window.setInterval(refreshAll, 30_000);
     startRealtimeSimulation();
     const unsubscribe = realtime.subscribe((evt) => {
       refreshAll();

@@ -1,5 +1,7 @@
 from datetime import UTC, datetime, timedelta
 import logging
+from threading import Lock
+from time import monotonic
 from typing import Annotated
 
 import jwt
@@ -39,6 +41,33 @@ def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: A
     app.state.store = store
     app.state.api_football = api_football or ApiFootballClient()
     app.state.provider_sync = None
+    app.state.provider_refresh_at = {"live": 0.0, "recent": 0.0}
+    app.state.provider_refresh_lock = Lock()
+
+    def refresh_provider_if_stale(scope: str) -> None:
+        provider = app.state.api_football
+        if not provider.configured:
+            return
+        now = monotonic()
+        if now - app.state.provider_refresh_at[scope] < 30:
+            return
+        with app.state.provider_refresh_lock:
+            now = monotonic()
+            if now - app.state.provider_refresh_at[scope] < 30:
+                return
+            try:
+                count = SyncService(store, provider).sync(scope=scope)
+                app.state.provider_sync = {
+                    "provider": "API_FOOTBALL",
+                    "status": "COMPLETED",
+                    "importedMatches": count,
+                    "requestedAt": datetime.now(UTC),
+                }
+                app.state.provider_refresh_at[scope] = now
+                if hasattr(store, "flush"):
+                    store.flush()
+            except ApiFootballError as exc:
+                logger.warning("API-Football %s sync failed: %s", scope, exc)
 
     @app.middleware("http")
     async def persist_store(request, call_next):
@@ -238,6 +267,7 @@ def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: A
 
     @app.get("/api/v1/matches/live", response_model=list[Match])
     def get_live_matches():
+        refresh_provider_if_stale("live")
         return [match for match in store.matches.values() if match.status in (MatchStatus.LIVE, MatchStatus.HALF_TIME)]
 
     @app.get("/api/v1/matches/upcoming", response_model=list[Match])
@@ -246,6 +276,7 @@ def create_app(store: MockStore | SQLAlchemyStore | None = None, api_football: A
 
     @app.get("/api/v1/matches/recent", response_model=list[Match])
     def get_recent_matches():
+        refresh_provider_if_stale("recent")
         return sorted((match for match in store.matches.values() if match.status == MatchStatus.FINISHED), key=lambda match: match.kickoff, reverse=True)
 
     @app.get("/api/v1/matches/{match_id}", response_model=Match)

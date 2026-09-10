@@ -65,11 +65,11 @@ export const useLiveMinute = (
       setMinute(fallback ?? 0);
       return;
     }
+    const providerMinute = fallback ?? 0;
+    const receivedAt = Date.now();
     const update = () => {
-      const kickoffMinute = kickoff
-        ? Math.max(0, Math.floor((Date.now() - new Date(kickoff).getTime()) / 60000))
-        : 0;
-      setMinute(Math.max(fallback ?? 0, kickoffMinute));
+      const elapsedMinutes = Math.floor((Date.now() - receivedAt) / 60000);
+      setMinute(Math.min(120, providerMinute + elapsedMinutes));
     };
     update();
     const timer = window.setInterval(update, 1000);

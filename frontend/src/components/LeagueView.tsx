@@ -71,7 +71,11 @@ export const LeagueView: React.FC<LeagueViewProps> = ({
       <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-[#3b4b3d]/30">
         <div>
           <h2 className="font-heading text-2xl sm:text-3xl font-extrabold text-white tracking-tight flex items-center gap-3">
-            <span className="text-3xl">{league.logo}</span>
+            {league.logo.startsWith('http') ? (
+              <img src={league.logo} alt="" className="h-8 w-8 object-contain" />
+            ) : (
+              <span className="text-3xl">{league.logo}</span>
+            )}
             {league.name}
           </h2>
           <p className="font-mono-tabular text-xs text-[#b9cbb9] uppercase tracking-wider mt-1">
@@ -106,7 +110,11 @@ export const LeagueView: React.FC<LeagueViewProps> = ({
                 : 'bg-[#181c24] border-[#3b4b3d]/40 text-[#b9cbb9] hover:text-white'
             }`}
           >
-            {l.logo} {l.name}
+            {l.logo.startsWith('http') ? (
+              <img src={l.logo} alt="" className="h-4 w-4 object-contain" />
+            ) : (
+              l.logo
+            )}{' '}{l.name}
           </button>
         ))}
       </div>
