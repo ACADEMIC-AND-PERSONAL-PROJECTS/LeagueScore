@@ -27,7 +27,7 @@ export const MatchListItem: React.FC<MatchListItemProps> = ({ match, leagueLabel
     >
       <div className="flex items-center justify-between gap-2 pb-2 font-mono-tabular text-[11px] text-[#b9cbb9]">
         <span className="truncate">{leagueLabel}</span>
-        <StatusBadge status={match.status} minute={match.minute} />
+        <StatusBadge status={match.status} minute={match.minute} kickoff={match.kickoff} />
       </div>
 
       <div className="space-y-1.5">

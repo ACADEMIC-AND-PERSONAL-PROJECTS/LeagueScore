@@ -54,6 +54,7 @@ export default function App() {
   // Initial load + real-time subscription (spec §13: updates without refresh)
   useEffect(() => {
     refreshAll();
+    const refreshTimer = window.setInterval(refreshAll, 60_000);
     startRealtimeSimulation();
     const unsubscribe = realtime.subscribe((evt) => {
       refreshAll();
@@ -65,7 +66,10 @@ export default function App() {
         );
       }
     });
-    return unsubscribe;
+    return () => {
+      window.clearInterval(refreshTimer);
+      unsubscribe();
+    };
   }, [refreshAll]);
 
   const leagueLabel = (leagueId: string) => {

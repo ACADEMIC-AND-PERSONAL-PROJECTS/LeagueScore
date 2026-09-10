@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { ApiError, getMatch, realtime } from '../api/api';
 import { Match, MatchEvent } from '../types';
 import { ClubCrest } from './ClubCrest';
-import { StatusBadge, EmptyState, LiveDot, formatKickoffTime, formatMatchDate } from './StatusBadge';
+import { StatusBadge, EmptyState, LiveDot, formatKickoffTime, formatMatchDate, useLiveMinute } from './StatusBadge';
 import { EVENT_EMOJI, EVENT_LABEL } from './eventIcons';
 import { ArrowLeft, MapPin, Clock, CalendarDays } from 'lucide-react';
 
@@ -43,6 +43,8 @@ export const MatchCenterView: React.FC<MatchCenterViewProps> = ({ matchId, onBac
     return unsubscribe;
   }, [load, matchId]);
 
+  const liveMinute = useLiveMinute(match?.status ?? 'SCHEDULED', match?.kickoff, match?.minute);
+
   if (error) {
     return (
       <div className="space-y-6">
@@ -70,7 +72,7 @@ export const MatchCenterView: React.FC<MatchCenterViewProps> = ({ matchId, onBac
             {formatMatchDate(match.kickoff)} — {formatKickoffTime(match.kickoff)}
           </span>
           <span className="flex items-center gap-2">
-            <StatusBadge status={match.status} minute={match.minute} />
+            <StatusBadge status={match.status} minute={match.minute} kickoff={match.kickoff} />
           </span>
         </div>
 
@@ -92,7 +94,7 @@ export const MatchCenterView: React.FC<MatchCenterViewProps> = ({ matchId, onBac
             {(match.status === 'LIVE' || match.status === 'HALF_TIME') && (
               <div className="mt-2 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-[#00ff87]/15 border border-[#00ff87]/50 text-[#00ff87] font-mono-tabular text-xs font-bold">
                 {match.status === 'LIVE' && <LiveDot />}
-                {match.status === 'LIVE' ? `${match.minute ?? 0}'` : 'HALF-TIME'}
+                {match.status === 'LIVE' ? `${liveMinute}'` : 'HALF-TIME'}
               </div>
             )}
           </div>

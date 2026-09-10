@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { MatchStatus } from '../types';
 
 /** Formats an ISO kickoff datetime as a short date, e.g. "Sat, Sep 12". */
@@ -53,15 +53,47 @@ export const LiveDot = () => (
   </span>
 );
 
-export const StatusBadge: React.FC<{ status: MatchStatus; minute?: number | null }> = ({
+export const useLiveMinute = (
+  status: MatchStatus,
+  kickoff?: string,
+  fallback?: number | null,
+) => {
+  const [minute, setMinute] = useState(fallback ?? 0);
+
+  useEffect(() => {
+    if (status !== 'LIVE') {
+      setMinute(fallback ?? 0);
+      return;
+    }
+    const update = () => {
+      const kickoffMinute = kickoff
+        ? Math.max(0, Math.floor((Date.now() - new Date(kickoff).getTime()) / 60000))
+        : 0;
+      setMinute(Math.max(fallback ?? 0, kickoffMinute));
+    };
+    update();
+    const timer = window.setInterval(update, 1000);
+    return () => window.clearInterval(timer);
+  }, [fallback, kickoff, status]);
+
+  return minute;
+};
+
+export const StatusBadge: React.FC<{
+  status: MatchStatus;
+  minute?: number | null;
+  kickoff?: string;
+}> = ({
   status,
   minute,
+  kickoff,
 }) => {
+  const liveMinute = useLiveMinute(status, kickoff, minute);
   if (status === 'LIVE') {
     return (
       <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-[#00ff87]/15 border border-[#00ff87]/50 text-[#00ff87] font-mono-tabular text-[11px] font-bold">
         <LiveDot />
-        {minute ?? 0}'
+        {liveMinute}'
       </span>
     );
   }
