@@ -73,7 +73,12 @@ def create_app(store: MockStore | None = None) -> FastAPI:
 
     def emit(match: Match, event_type: str, **extra):
         app.state.last_events = getattr(app.state, "last_events", [])
-        app.state.last_events.append({"type": event_type, "matchId": match.id, "match": match.model_dump(by_alias=True), **extra})
+        app.state.last_events.append({
+            "type": event_type,
+            "matchId": match.id,
+            "match": match.model_dump(by_alias=True, mode="json"),
+            **extra,
+        })
         app.state.last_events = app.state.last_events[-100:]
 
     def sorted_events(match: Match):
@@ -271,7 +276,7 @@ def create_app(store: MockStore | None = None) -> FastAPI:
                 match.away_score += 1
             match.minute = max(match.minute or 0, event.minute)
         sorted_events(match)
-        emit(match, "EVENT_ADDED", event=event.model_dump(by_alias=True))
+        emit(match, "EVENT_ADDED", event=event.model_dump(by_alias=True, mode="json"))
         return event
 
     @app.delete("/api/v1/matches/{match_id}/events/{event_id}", response_model=Match)

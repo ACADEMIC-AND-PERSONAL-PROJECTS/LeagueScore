@@ -61,3 +61,33 @@ def test_deleting_goal_rolls_back_score(client, admin_headers):
 
     assert deleted.status_code == 200
     assert deleted.json()["awayScore"] == 1
+
+
+def test_substitution_requires_player_out(client, admin_headers):
+    response = client.post(
+        "/api/v1/matches/m-1/events",
+        headers=admin_headers,
+        json={
+            "type": "SUBSTITUTION",
+            "minute": 72,
+            "side": "home",
+            "playerName": "Leandro Trossard",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_websocket_receives_match_update(client, admin_headers):
+    with client.websocket_connect("/ws?matchId=m-1") as websocket:
+        client.patch(
+            "/api/v1/matches/m-1",
+            headers=admin_headers,
+            json={"homeScore": 4},
+        )
+        websocket.send_text("poll")
+        event = websocket.receive_json()
+
+    assert event["type"] == "MATCH_UPDATED"
+    assert event["matchId"] == "m-1"
+    assert event["match"]["homeScore"] == 4
