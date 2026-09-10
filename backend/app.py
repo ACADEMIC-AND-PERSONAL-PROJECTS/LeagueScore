@@ -12,7 +12,7 @@ from .models import (
 )
 from .store import MockStore
 
-SECRET = "leaguescore-development-secret"
+SECRET = "leaguescore-development-secret-key-2026"
 
 
 def create_app(store: MockStore | None = None) -> FastAPI:
@@ -102,6 +102,23 @@ def create_app(store: MockStore | None = None) -> FastAPI:
         league = League(id=store.new_id("lg"), **data.model_dump())
         store.leagues[league.id] = league
         return league
+
+    @app.patch("/api/v1/leagues/{league_id}", response_model=League)
+    def update_league(league_id: str, data: LeagueInput, _: Annotated[str, Depends(require_admin)]):
+        league = league_or_404(league_id)
+        if any(item.id != league_id and item.name.casefold() == data.name.casefold() for item in store.leagues.values()):
+            error(409, "A league with this name already exists.")
+        league.name, league.country, league.logo = data.name, data.country, data.logo
+        return league
+
+    @app.delete("/api/v1/leagues/{league_id}", status_code=204)
+    def delete_league(league_id: str, _: Annotated[str, Depends(require_admin)]):
+        league_or_404(league_id)
+        if any(match.league_id == league_id for match in store.matches.values()):
+            error(409, "Cannot delete a league that still has matches.")
+        del store.leagues[league_id]
+        for season_id in [item.id for item in store.seasons.values() if item.league_id == league_id]:
+            del store.seasons[season_id]
 
     @app.get("/api/v1/leagues/{league_id}/seasons", response_model=list[Season])
     def get_seasons(league_id: str):
@@ -273,6 +290,26 @@ def create_app(store: MockStore | None = None) -> FastAPI:
         emit(match, "EVENT_DELETED", eventId=event_id)
         return match
 
+    @app.post("/api/v1/integrations/api-football/sync", status_code=202)
+    def sync_provider(_: Annotated[str, Depends(require_admin)]):
+        return {
+            "id": f"sync-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
+            "provider": "API_FOOTBALL",
+            "status": "QUEUED",
+            "requestedAt": datetime.now(UTC),
+        }
+
+    @app.get("/api/v1/integrations/api-football/status")
+    def provider_status(_: Annotated[str, Depends(require_admin)]):
+        return {
+            "provider": "API_FOOTBALL",
+            "configured": False,
+            "healthy": False,
+            "lastSuccessfulSync": None,
+            "quota": {"dailyLimit": None, "dailyRemaining": None, "minuteLimit": None, "minuteRemaining": None, "resetAt": None},
+            "lastError": "Provider adapter is not configured in the mock backend.",
+        }
+
     @app.get("/api/v1/teams/{team_id}", response_model=Team)
     def get_team(team_id: str):
         return team_or_404(team_id)
@@ -290,6 +327,23 @@ def create_app(store: MockStore | None = None) -> FastAPI:
         store.teams[team.id] = team
         return team
 
+    @app.patch("/api/v1/teams/{team_id}", response_model=Team)
+    def update_team(team_id: str, data: TeamInput, _: Annotated[str, Depends(require_admin)]):
+        team = team_or_404(team_id)
+        if any(item.id != team_id and item.name.casefold() == data.name.casefold() for item in store.teams.values()):
+            error(409, "A team with this name already exists.")
+        team.name, team.short_name, team.crest_url, team.country = data.name, data.short_name, data.crest_url, data.country
+        return team
+
+    @app.delete("/api/v1/teams/{team_id}", status_code=204)
+    def delete_team(team_id: str, _: Annotated[str, Depends(require_admin)]):
+        team_or_404(team_id)
+        if any(match.home_team.id == team_id or match.away_team.id == team_id for match in store.matches.values()):
+            error(409, "Cannot delete a team that has existing matches.")
+        del store.teams[team_id]
+        for player_id in [item.id for item in store.players.values() if item.team_id == team_id]:
+            del store.players[player_id]
+
     @app.post("/api/v1/teams/{team_id}/players", response_model=Player, status_code=201)
     def create_player(team_id: str, data: PlayerInput, _: Annotated[str, Depends(require_admin)]):
         team_or_404(team_id)
@@ -298,6 +352,22 @@ def create_app(store: MockStore | None = None) -> FastAPI:
         player = Player(id=store.new_id("pl"), **data.model_dump())
         store.players[player.id] = player
         return player
+
+    @app.patch("/api/v1/players/{player_id}", response_model=Player)
+    def update_player(player_id: str, data: PlayerInput, _: Annotated[str, Depends(require_admin)]):
+        if player_id not in store.players:
+            error(404, "Player not found")
+        team_or_404(data.team_id)
+        player = store.players[player_id]
+        player.team_id, player.first_name, player.last_name = data.team_id, data.first_name, data.last_name
+        player.shirt_number, player.position = data.shirt_number, data.position
+        return player
+
+    @app.delete("/api/v1/players/{player_id}", status_code=204)
+    def delete_player(player_id: str, _: Annotated[str, Depends(require_admin)]):
+        if player_id not in store.players:
+            error(404, "Player not found")
+        del store.players[player_id]
 
     @app.websocket("/ws")
     async def websocket(websocket: WebSocket):

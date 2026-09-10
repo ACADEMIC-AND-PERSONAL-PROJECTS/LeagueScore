@@ -49,3 +49,35 @@ def test_invalid_team_pairing_is_rejected(client, admin_headers):
     )
 
     assert response.status_code == 400
+
+
+def test_league_with_matches_cannot_be_deleted(client, admin_headers):
+    response = client.delete("/api/v1/leagues/lg-pl", headers=admin_headers)
+
+    assert response.status_code == 409
+
+
+def test_team_and_player_crud(client, admin_headers):
+    team = client.post(
+        "/api/v1/teams",
+        headers=admin_headers,
+        json={"name": "Napoli", "shortName": "NAP", "crestUrl": "", "country": "Italy"},
+    )
+    assert team.status_code == 201
+
+    player = client.post(
+        f"/api/v1/teams/{team.json()['id']}/players",
+        headers=admin_headers,
+        json={
+            "teamId": team.json()["id"],
+            "firstName": "Victor",
+            "lastName": "Osimhen",
+            "shirtNumber": 9,
+            "position": "FORWARD",
+        },
+    )
+    assert player.status_code == 201
+    assert client.get(f"/api/v1/teams/{team.json()['id']}/players").json()[0]["firstName"] == "Victor"
+
+    deleted = client.delete(f"/api/v1/players/{player.json()['id']}", headers=admin_headers)
+    assert deleted.status_code == 204
