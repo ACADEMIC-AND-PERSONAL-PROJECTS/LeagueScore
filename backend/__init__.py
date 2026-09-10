@@ -1,0 +1,1 @@
+"""LeagueScore FastAPI backend."""
