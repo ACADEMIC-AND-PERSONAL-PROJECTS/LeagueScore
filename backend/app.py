@@ -6,6 +6,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, W
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+from .api_football import ApiFootballClient, ApiFootballError
 from .models import (
     ApiError, EventType, League, LeagueInput, LoginRequest, Match, MatchEvent,
     MatchEventInput, MatchInput, MatchPatch, MatchStatus, Player, PlayerInput,
@@ -32,6 +33,7 @@ def create_app(store: MockStore | None = None) -> FastAPI:
         allow_headers=["*"],
     )
     app.state.store = store
+    app.state.api_football = ApiFootballClient()
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
@@ -319,13 +321,34 @@ def create_app(store: MockStore | None = None) -> FastAPI:
 
     @app.get("/api/v1/integrations/api-football/status")
     def provider_status(_: Annotated[str, Depends(require_admin)]):
+        provider = app.state.api_football
+        if not provider.configured:
+            return {
+                "provider": "API_FOOTBALL",
+                "configured": False,
+                "healthy": False,
+                "lastSuccessfulSync": None,
+                "quota": {"dailyLimit": None, "dailyRemaining": None, "minuteLimit": None, "minuteRemaining": None, "resetAt": None},
+                "lastError": "API_FOOTBALL_KEY is not configured.",
+            }
+        try:
+            health = provider.health()
+        except ApiFootballError as exc:
+            return {
+                "provider": "API_FOOTBALL",
+                "configured": True,
+                "healthy": False,
+                "lastSuccessfulSync": None,
+                "quota": {"dailyLimit": None, "dailyRemaining": None, "minuteLimit": None, "minuteRemaining": None, "resetAt": None},
+                "lastError": str(exc),
+            }
         return {
             "provider": "API_FOOTBALL",
-            "configured": False,
-            "healthy": False,
+            "configured": True,
+            "healthy": health["healthy"],
             "lastSuccessfulSync": None,
-            "quota": {"dailyLimit": None, "dailyRemaining": None, "minuteLimit": None, "minuteRemaining": None, "resetAt": None},
-            "lastError": "Provider adapter is not configured in the mock backend.",
+            "quota": health["quota"],
+            "lastError": None,
         }
 
     @app.get("/api/v1/teams/{team_id}", response_model=Team)
