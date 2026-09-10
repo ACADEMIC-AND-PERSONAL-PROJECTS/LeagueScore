@@ -1,24 +1,59 @@
 from datetime import UTC, datetime, timedelta
+import logging
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
+from .api_football import ApiFootballClient, ApiFootballError
 from .models import (
     ApiError, EventType, League, LeagueInput, LoginRequest, Match, MatchEvent,
     MatchEventInput, MatchInput, MatchPatch, MatchStatus, Player, PlayerInput,
     Season, SeasonInput, Session, StandingRow, Team, TeamInput,
 )
 from .store import MockStore
+from .sync_service import SyncService
 
 SECRET = "leaguescore-development-secret-key-2026"
+logger = logging.getLogger(__name__)
 
 
-def create_app(store: MockStore | None = None) -> FastAPI:
+def create_app(store: MockStore | None = None, api_football: ApiFootballClient | None = None) -> FastAPI:
     store = store or MockStore.seeded()
     app = FastAPI(title="LeagueScore API", version="1.0.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://localhost:3000",
+            "http://localhost:3001",
+            "http://127.0.0.1:3000",
+            "http://127.0.0.1:3001",
+        ],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.store = store
+    app.state.api_football = api_football or ApiFootballClient()
+    app.state.provider_sync = None
+
+    @app.on_event("startup")
+    def sync_live_provider_data():
+        provider = app.state.api_football
+        if not provider.configured:
+            return
+        try:
+            count = SyncService(store, provider).sync(scope="live")
+            app.state.provider_sync = {
+                "provider": "API_FOOTBALL",
+                "status": "COMPLETED",
+                "importedMatches": count,
+                "requestedAt": datetime.now(UTC),
+            }
+        except ApiFootballError as exc:
+            logger.warning("API-Football startup sync failed: %s", exc)
 
     @app.exception_handler(HTTPException)
     async def http_error(_, exc: HTTPException):
@@ -296,23 +331,61 @@ def create_app(store: MockStore | None = None) -> FastAPI:
         return match
 
     @app.post("/api/v1/integrations/api-football/sync", status_code=202)
-    def sync_provider(_: Annotated[str, Depends(require_admin)]):
-        return {
-            "id": f"sync-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}",
+    def sync_provider(
+        payload: dict = Body(default_factory=dict),
+        _: Annotated[str, Depends(require_admin)] = None,
+    ):
+        provider = app.state.api_football
+        sync_id = f"sync-{datetime.now(UTC).strftime('%Y%m%d%H%M%S%f')}"
+        result = {
+            "id": sync_id,
             "provider": "API_FOOTBALL",
             "status": "QUEUED",
             "requestedAt": datetime.now(UTC),
         }
+        if provider.configured:
+            count = SyncService(store, provider).sync(
+                scope=payload.get("scope", "live"),
+                league_ids=payload.get("leagueIds"),
+            )
+            result.update({"status": "COMPLETED", "importedMatches": count})
+            app.state.provider_sync = result
+        return result
 
     @app.get("/api/v1/integrations/api-football/status")
     def provider_status(_: Annotated[str, Depends(require_admin)]):
+        provider = app.state.api_football
+        if not provider.configured:
+            return {
+                "provider": "API_FOOTBALL",
+                "configured": False,
+                "healthy": False,
+                "lastSuccessfulSync": None,
+                "quota": {"dailyLimit": None, "dailyRemaining": None, "minuteLimit": None, "minuteRemaining": None, "resetAt": None},
+                "lastError": "API_FOOTBALL_KEY is not configured.",
+            }
+        try:
+            health = provider.health()
+        except ApiFootballError as exc:
+            return {
+                "provider": "API_FOOTBALL",
+                "configured": True,
+                "healthy": False,
+                "lastSuccessfulSync": None,
+                "quota": {"dailyLimit": None, "dailyRemaining": None, "minuteLimit": None, "minuteRemaining": None, "resetAt": None},
+                "lastError": str(exc),
+            }
         return {
             "provider": "API_FOOTBALL",
-            "configured": False,
-            "healthy": False,
-            "lastSuccessfulSync": None,
-            "quota": {"dailyLimit": None, "dailyRemaining": None, "minuteLimit": None, "minuteRemaining": None, "resetAt": None},
-            "lastError": "Provider adapter is not configured in the mock backend.",
+            "configured": True,
+            "healthy": health["healthy"],
+            "lastSuccessfulSync": (
+                app.state.provider_sync.get("requestedAt")
+                if app.state.provider_sync
+                else None
+            ),
+            "quota": health["quota"],
+            "lastError": None,
         }
 
     @app.get("/api/v1/teams/{team_id}", response_model=Team)
