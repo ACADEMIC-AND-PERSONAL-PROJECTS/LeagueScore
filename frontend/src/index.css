@@ -1,0 +1,56 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-outfit: 'Outfit', sans-serif;
+    --font-space-grotesk: 'Space Grotesk', monospace;
+    --font-inter: 'Inter', sans-serif;
+  }
+
+  body {
+    font-family: var(--font-inter);
+    background-color: #080C14;
+    background-image: 
+      radial-gradient(ellipse at 50% -15%, rgba(0, 255, 135, 0.08), transparent 60%),
+      radial-gradient(circle at 85% 15%, rgba(0, 227, 253, 0.04), transparent 45%),
+      linear-gradient(180deg, rgba(8, 12, 20, 0.8) 0%, rgba(8, 12, 20, 1) 100%);
+    background-attachment: fixed;
+    color: #dfe2ee;
+  }
+
+  h1, h2, h3, h4, .font-heading {
+    font-family: var(--font-outfit);
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-space-grotesk);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom tactical pitch pattern */
+.pitch-grid {
+  background-color: #0c1811;
+  background-image: 
+    repeating-linear-gradient(0deg, rgba(0, 255, 135, 0.05) 0px, rgba(0, 255, 135, 0.05) 36px, transparent 36px, transparent 72px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.06) 1px, transparent 1px);
+  background-size: 100% 72px, 50% 100%;
+}
+
+/* Live Score Flash Animation */
+@keyframes scorePulse {
+  0% { transform: scale(1); text-shadow: 0 0 10px rgba(0, 255, 135, 0.8); }
+  50% { transform: scale(1.18); color: #ffffff; text-shadow: 0 0 30px rgba(0, 227, 253, 1); }
+  100% { transform: scale(1); }
+}
+
+.animate-score-flash {
+  animation: scorePulse 0.8s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+/* Custom subtle scrollbar */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: #0a0e16; }
+::-webkit-scrollbar-thumb { background: #262a33; border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: #00ff87; }
+
