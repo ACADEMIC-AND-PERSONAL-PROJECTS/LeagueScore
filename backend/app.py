@@ -4,6 +4,7 @@ from typing import Annotated
 import jwt
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 from .models import (
     ApiError, EventType, League, LeagueInput, LoginRequest, Match, MatchEvent,
@@ -18,6 +19,13 @@ SECRET = "leaguescore-development-secret-key-2026"
 def create_app(store: MockStore | None = None) -> FastAPI:
     store = store or MockStore.seeded()
     app = FastAPI(title="LeagueScore API", version="1.0.0")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     app.state.store = store
 
     @app.exception_handler(HTTPException)
